@@ -1,0 +1,55 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # standard = errcheck, govet, staticcheck, unused, ineffassign
+  default: standard
+  enable:
+    - errorlint      # wajib pakai errors.Is/As dan %w
+    - nilerr         # bug: return nil padahal err != nil
+    - gosec          # security
+    - bodyclose      # http response body harus ditutup
+    - noctx          # http request harus pakai context
+    - contextcheck   # context tidak boleh hilang di tengah jalan
+    - sqlclosecheck  # rows/stmt harus ditutup
+    - rowserrcheck   # wajib cek rows.Err()
+    - gocritic       # bug & style umum
+    - unconvert      # type conversion tidak perlu
+    - misspell       # typo
+    - copyloopvar    # variabel loop redundan (Go 1.22+)
+
+  exclusions:
+    # Skip otomatis file ber-header "Code generated ... DO NOT EDIT."
+    # (sqlc, mockgen, protobuf)
+    generated: lax
+    # Cadangan khusus output sqlc di setiap module: <module>/repository/
+    paths:
+      - '.*/repository/db\.go$'
+      - '.*/repository/models\.go$'
+      - '.*/repository/querier\.go$'
+      - '.*/repository/copyfrom\.go$'
+      - '.*/repository/.*\.sql\.go$'
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      # ganti dengan module path di go.mod
+      local-prefixes:
+        - github.com/yourorg/yourapp
+  exclusions:
+    generated: lax
+    paths:
+      - '.*/repository/db\.go$'
+      - '.*/repository/models\.go$'
+      - '.*/repository/querier\.go$'
+      - '.*/repository/copyfrom\.go$'
+      - '.*/repository/.*\.sql\.go$'
