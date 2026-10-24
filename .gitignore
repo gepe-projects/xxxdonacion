@@ -14,7 +14,7 @@
 .env
 .env.*
 !.env.example
-/secrets
+/secrets/service-account.json
 
 # Go workspace files
 go.work
