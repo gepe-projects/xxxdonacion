@@ -9,7 +9,7 @@ GOOSE := go run github.com/pressly/goose/v3/cmd/goose@$(GOOSE_VERSION)
 SQLC_VERSION ?= v1.31.1
 SQLC := go run github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
 
-.PHONY: run dev build test gci fmt tidy sqlc migrate-up migrate-down migrate-status migrate-reset migrate-create
+.PHONY: run dev build test fmt tidy sqlc migrate-up migrate-down migrate-status migrate-reset migrate-create
 
 run: ## Run the HTTP server
 	go run ./cmd/app
@@ -22,9 +22,6 @@ build: ## Build the server binary to bin/app
 
 test: ## Run all tests
 	go test ./...
-
-gci: ## Run golangci-lint
-	golangci-lint run
 
 fmt: ## Format all Go files
 	gofmt -w .

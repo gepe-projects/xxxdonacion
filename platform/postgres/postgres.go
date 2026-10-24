@@ -3,9 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
-
 	"github.com/jackc/pgx/v5/pgxpool"
-
 	"xxxdonacion/platform/config"
 )
 

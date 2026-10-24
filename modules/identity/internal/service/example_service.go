@@ -3,11 +3,9 @@ package service
 import (
 	"context"
 	"fmt"
-	"log/slog"
-
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
-
+	"log/slog"
 	"xxxdonacion/modules/identity/api/domain"
 )
 

@@ -12,7 +12,6 @@ import (
 	"xxxdonacion/platform/config"
 
 	"github.com/labstack/echo/v5"
-	"github.com/labstack/echo/v5/middleware"
 	emw "github.com/labstack/echo/v5/middleware"
 )
 
@@ -37,7 +36,7 @@ type Server struct {
 func New(cfg *config.App) *Server {
 	e := echo.NewWithConfig(echo.Config{})
 	e.Use(emw.Recover())
-	e.Use(middleware.BodyLimit(bodyLimitBytes))
+	e.Use(emw.BodyLimit(bodyLimitBytes))
 	// set global middleware
 
 	return &Server{Echo: e, cfg: cfg}
@@ -47,7 +46,7 @@ func (s *Server) Start() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	config := echo.StartConfig{
+	srvConfig := echo.StartConfig{
 		Address:         fmt.Sprintf(":%d", s.cfg.Port),
 		GracefulTimeout: gracefulTimeout,
 		BeforeServeFunc: func(s *http.Server) error {
@@ -59,5 +58,5 @@ func (s *Server) Start() error {
 		},
 	}
 
-	return config.Start(ctx, s.Echo)
+	return srvConfig.Start(ctx, s.Echo)
 }
