@@ -1,13 +1,13 @@
 package http
 
 import (
-	"xxxdonacion/modules/identity/api/domain"
+	"xxxdonacion/modules/identity/internal/service"
 )
 
 type Handler struct {
-	service domain.Service
+	service *service.Service
 }
 
-func New(service domain.Service) *Handler {
+func New(service *service.Service) *Handler {
 	return &Handler{service}
 }

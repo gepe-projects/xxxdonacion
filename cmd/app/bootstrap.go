@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"time"
+	"xxxdonacion/platform/logger"
 
 	"github.com/joho/godotenv"
 
@@ -22,6 +23,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
+	logger.New(cfg)
 
 	return serve(cfg)
 }
@@ -42,17 +44,17 @@ func serve(cfg *config.App) error {
 	}
 	slog.Info("redis connected")
 
-	server := server.New(cfg)
+	srv := server.New(cfg)
 
 	// wiring module
 	identityModule := identity.New(identity.Dependencies{DB: pool, Redis: rdb})
 
 	// register routes
-	identityModule.RegisterRoutes(server.Echo)
+	identityModule.RegisterRoutes(srv.Echo)
 
 	slog.Info("http server listening", "addr", cfg.Port, "env", cfg.Environment)
 
-	return server.Start()
+	return srv.Start()
 }
 
 func loadConfig() (*config.App, error) {

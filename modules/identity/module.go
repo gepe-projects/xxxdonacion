@@ -17,7 +17,7 @@ type Dependencies struct {
 
 type Module struct {
 	deps Dependencies
-	svc  domain.Service
+	svc  *service.Service
 }
 
 func New(deps Dependencies) *Module {
@@ -33,6 +33,7 @@ func (m *Module) RegisterRoutes(e *echo.Echo) {
 	g := e.Group("identities")
 
 	g.GET("/foo", h.Foo)
+	g.GET("/internal", h.InternalError)
 }
 
 // exposed buat module lain yang butuh

@@ -23,6 +23,8 @@ type App struct {
 	Environment string `env:"APP_ENV"  envDefault:"development"`
 	Name        string `env:"APP_NAME" envDefault:"app"`
 	Port        int    `env:"APP_PORT" envDefault:"8080"`
+	LogLevel    string `env:"APP_LOG_LEVEL" envDefault:"info"`
+	LogFormat   string `env:"APP_LOG_FORMAT" envDefault:"text"`
 	// CORSOrigins enables CORS when set, e.g. APP_CORS_ORIGINS=http://localhost:3000,https://app.example.com
 	CORSOrigins []string `env:"APP_CORS_ORIGINS"`
 

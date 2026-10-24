@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/labstack/echo/v5"
 	emw "github.com/labstack/echo/v5/middleware"
+	mw "xxxdonacion/platform/server/middleware"
 )
 
 const (
@@ -34,10 +36,16 @@ type Server struct {
 }
 
 func New(cfg *config.App) *Server {
-	e := echo.NewWithConfig(echo.Config{})
+	e := echo.NewWithConfig(echo.Config{
+		Logger: slog.Default(),
+	})
 	e.Use(emw.Recover())
+	e.Use(mw.RequestID())
+	e.Use(mw.ContextLogger)
+	e.Use(mw.AccessLog())
 	e.Use(emw.BodyLimit(bodyLimitBytes))
 	// set global middleware
+	e.HTTPErrorHandler = mw.ErrorHandler()
 
 	return &Server{Echo: e, cfg: cfg}
 }
