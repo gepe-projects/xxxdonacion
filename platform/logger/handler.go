@@ -19,6 +19,9 @@ func (h *contextHandler) Handle(ctx context.Context, r slog.Record) error {
 	if id := RequestIDFromContext(ctx); id != "" && !hasAttr(r, KeyRequestID) {
 		r.AddAttrs(slog.String(KeyRequestID, id))
 	}
+	if uid := AuthUIDFromContext(ctx); uid != "" && !hasAttr(r, KeyAuthUID) {
+		r.AddAttrs(slog.String(KeyAuthUID, uid))
+	}
 	return h.Handler.Handle(ctx, r)
 }
 

@@ -1,0 +1,10 @@
+.env
+.env.*
+secrets/
+tmp/
+bin/
+.git/
+.gitignore
+*.test
+coverage.out
+coverage.html

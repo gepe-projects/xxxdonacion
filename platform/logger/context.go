@@ -35,3 +35,18 @@ func RequestIDFromContext(ctx context.Context) string {
 	id, _ := ctx.Value(requestIDKey{}).(string)
 	return id
 }
+
+type authUIDKey struct{}
+
+// WithAuthUID attaches a verified Firebase UID to ctx. The context handler adds
+// it to every record logged with that context, so handlers can keep using
+// slog.InfoContext without adding auth_uid manually.
+func WithAuthUID(ctx context.Context, uid string) context.Context {
+	return context.WithValue(ctx, authUIDKey{}, uid)
+}
+
+// AuthUIDFromContext returns the verified Firebase UID stored in ctx, if any.
+func AuthUIDFromContext(ctx context.Context) string {
+	uid, _ := ctx.Value(authUIDKey{}).(string)
+	return uid
+}

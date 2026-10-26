@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,6 +16,7 @@ import (
 
 	"xxxdonacion/platform/apperr"
 	"xxxdonacion/platform/config"
+	"xxxdonacion/platform/firebase"
 	"xxxdonacion/platform/logger"
 )
 
@@ -176,5 +178,65 @@ func TestAccessLogLogsAppErrorCauseOnce(t *testing.T) {
 	if got["error"] != "oops" || got["error_kind"] != "internal" || got["error_cause"] != "db down" {
 		t.Fatalf("error fields = %v/%v/%v, want oops/internal/db down",
 			got["error"], got["error_kind"], got["error_cause"])
+	}
+}
+
+type staticVerifier struct {
+	identity *firebase.Identity
+}
+
+func (v staticVerifier) Verify(context.Context, string) (*firebase.Identity, error) {
+	return v.identity, nil
+}
+
+func (v staticVerifier) VerifyRevoked(context.Context, string) (*firebase.Identity, error) {
+	return v.identity, nil
+}
+
+func TestAuthUIDInjectedAfterRequireAuth(t *testing.T) {
+	e, buf := newAccessLogServer(t)
+	e.GET("/me", func(c *echo.Context) error {
+		slog.InfoContext(c.Request().Context(), "handler log")
+		return c.NoContent(http.StatusNoContent)
+	}, RequireAuth(staticVerifier{identity: &firebase.Identity{UID: "uid-1"}}))
+
+	rec := request(t, e, http.MethodGet, "/me", http.Header{
+		echo.HeaderAuthorization: {"Bearer token"},
+	})
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+
+	entries := parseLogs(t, buf)
+	if len(entries) != 2 {
+		t.Fatalf("got %d log entries, want 2: %s", len(entries), buf.String())
+	}
+	for _, got := range entries {
+		if got["auth_uid"] != "uid-1" {
+			t.Errorf("auth_uid = %v, want uid-1 (log: %s)", got["auth_uid"], buf.String())
+		}
+		if got["request_id"] == "" {
+			t.Errorf("request_id is empty (log: %s)", buf.String())
+		}
+	}
+}
+
+func TestAuthUIDAbsentWhenAuthFails(t *testing.T) {
+	e, buf := newAccessLogServer(t)
+	e.GET("/me", func(c *echo.Context) error {
+		return c.NoContent(http.StatusNoContent)
+	}, RequireAuth(staticVerifier{identity: &firebase.Identity{UID: "uid-1"}}))
+
+	rec := request(t, e, http.MethodGet, "/me", nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+
+	entries := parseLogs(t, buf)
+	if len(entries) != 1 {
+		t.Fatalf("got %d log entries, want 1: %s", len(entries), buf.String())
+	}
+	if _, ok := entries[0]["auth_uid"]; ok {
+		t.Fatalf("auth_uid should be absent on failed auth: %s", buf.String())
 	}
 }

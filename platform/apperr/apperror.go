@@ -1,5 +1,7 @@
 package apperr
 
+import "fmt"
+
 type Kind int
 
 const (
@@ -9,6 +11,7 @@ const (
 	KindConflict
 	KindUnauthorized
 	KindForbidden
+	KindTooManyRequests
 )
 
 func (k Kind) String() string {
@@ -25,6 +28,8 @@ func (k Kind) String() string {
 		return "unauthorized"
 	case KindForbidden:
 		return "forbidden"
+	case KindTooManyRequests:
+		return "too_many_requests"
 	default:
 		return "unknown"
 	}
@@ -45,10 +50,40 @@ type FieldError struct {
 	Message string `json:"message,omitempty"`
 }
 
+func New(kind Kind, message string) *Error {
+	return &Error{Kind: kind, Message: message}
+}
+
 func Wrap(err error, kind Kind, message string) *Error {
 	return &Error{Kind: kind, Message: message, err: err}
 }
 
-func New(Kind Kind, Message string) *Error {
-	return &Error{Kind: Kind, Message: Message}
+func BadRequest(message string) *Error {
+	return New(KindBadRequest, message)
+}
+
+func Unauthorized(message string) *Error {
+	return New(KindUnauthorized, message)
+}
+
+func Forbidden(message string) *Error {
+	return New(KindForbidden, message)
+}
+
+func NotFound(message string) *Error {
+	return New(KindNotFound, message)
+}
+
+func Conflict(message string) *Error {
+	return New(KindConflict, message)
+}
+
+func TooManyRequests(message string) *Error {
+	return New(KindTooManyRequests, message)
+}
+
+// Internal membungkus cause dengan konteks aksi. Pesan user selalu generik
+// supaya detail internal tidak bocor ke client.
+func Internal(err error, action string) *Error {
+	return Wrap(fmt.Errorf("%s: %w", action, err), KindInternal, "oops something went wrong")
 }

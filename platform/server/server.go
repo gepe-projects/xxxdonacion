@@ -48,6 +48,26 @@ func New(cfg *config.App) *Server {
 		DisableStackAll: true,
 	}))
 	e.Use(emw.BodyLimit(bodyLimitBytes))
+	if len(cfg.CORSOrigins) > 0 {
+		e.Use(emw.CORSWithConfig(emw.CORSConfig{
+			AllowOrigins: cfg.CORSOrigins,
+			AllowMethods: []string{
+				http.MethodGet,
+				http.MethodPost,
+				http.MethodPut,
+				http.MethodPatch,
+				http.MethodDelete,
+				http.MethodOptions,
+			},
+			AllowHeaders: []string{
+				echo.HeaderAuthorization,
+				echo.HeaderContentType,
+				echo.HeaderXRequestID,
+			},
+			AllowCredentials: false,
+			MaxAge:           600,
+		}))
+	}
 	// set global middleware
 	e.HTTPErrorHandler = mw.ErrorHandler()
 

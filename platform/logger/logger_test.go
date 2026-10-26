@@ -60,6 +60,7 @@ func TestNewJSONIncludesBaseAttrsAndRequestID(t *testing.T) {
 	})
 
 	ctx := WithRequestID(context.Background(), "req-123")
+	ctx = WithAuthUID(ctx, "uid-1")
 	l.InfoContext(ctx, "hello", "answer", 42)
 
 	var got map[string]any
@@ -73,6 +74,7 @@ func TestNewJSONIncludesBaseAttrsAndRequestID(t *testing.T) {
 		"level":           "INFO",
 		"msg":             "hello",
 		"request_id":      "req-123",
+		"auth_uid":        "uid-1",
 		"answer":          float64(42),
 	}
 	for k, v := range want {

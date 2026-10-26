@@ -20,7 +20,7 @@ Prinsip utamanya:
 2. [Startup: logger dibuat sekali](#2-startup-logger-dibuat-sekali)
 3. [Alur satu request](#3-alur-satu-request)
 4. [Bagaimana `request_id` masuk ke log](#4-bagaimana-request_id-masuk-ke-log)
-5. [Bagaimana `user_id` masuk](#5-bagaimana-user_id-masuk)
+5. [Bagaimana `auth_uid` masuk](#5-bagaimana-auth_uid-masuk)
 6. [Isi access log](#6-isi-access-log)
 7. [Alur error: kenapa tidak dobel](#7-alur-error-kenapa-tidak-dobel)
 8. [Alur panic](#8-alur-panic)
@@ -41,12 +41,12 @@ Prinsip utamanya:
 | `cmd/app/bootstrap.go` | init logger, log lifecycle startup/shutdown |
 | `platform/config/config.go` | baca `APP_LOG_LEVEL`, `APP_LOG_FORMAT`, dll. |
 | `platform/logger/logger.go` | membuat **satu** logger + base attribute |
-| `platform/logger/handler.go` | menyuntik `request_id` dari context ke setiap log |
+| `platform/logger/handler.go` | menyuntik `request_id`/`auth_uid` dari context ke setiap log |
 | `platform/logger/context.go` | helper `WithRequestID`, `FromContext`, `WithContext` |
 | `platform/server/server.go` | urutan middleware |
 | `platform/server/middleware/req_id.go` | membuat/memvalidasi request ID |
 | `platform/server/middleware/logger.go` | `AccessLog`, satu baris log per request |
-| `platform/server/middleware/requireAuth.go` | menambah `user_id` ke context |
+| `platform/server/middleware/requireAuth.go` | menambah `auth_uid` ke context |
 | `platform/server/middleware/error.go` | mengubah error jadi response JSON, **tidak** logging |
 | `platform/apperr/apperror.go` | error dengan `Kind`, `Message`, dan `cause` |
 
@@ -98,7 +98,7 @@ func NewWithWriter(cfg *config.App, w io.Writer) *slog.Logger {
 		h = slog.NewTextHandler(w, opts)
 	}
 
-	// Membungkus handler supaya request_id dari context ikut masuk.
+	// Membungkus handler supaya field dari context ikut masuk.
 	h = &contextHandler{Handler: h}
 
 	base := []any{
@@ -128,7 +128,7 @@ Penjelasannya:
   setiap log jadi memanggil `runtime.Caller`; mahal kalau traffic tinggi.
 - **Handler** dipilih di sini: JSON di luar development, text di development.
 - **`contextHandler`** membungkus handler asli. Inilah yang menambahkan
-  `request_id` nanti.
+  `request_id` dan `auth_uid` nanti.
 - **`base`** adalah attribute yang selalu ada di semua log: `service`, `env`,
   `service_version`, `service_commit`.
 - **`slog.SetDefault(log)`** membuat logger ini dipakai seluruh aplikasi,
@@ -192,7 +192,7 @@ AccessLog
           RequireAuth (kalau route memakainya)
              ├─ verifikasi token
              ├─ kalau gagal → return apperr
-             └─ kalau sukses → tambah user_id ke context
+             └─ kalau sukses → tambah auth_uid ke context
              │
              ▼
           Handler / Service
@@ -293,6 +293,9 @@ func (h *contextHandler) Handle(ctx context.Context, r slog.Record) error {
 	if id := RequestIDFromContext(ctx); id != "" && !hasAttr(r, KeyRequestID) {
 		r.AddAttrs(slog.String(KeyRequestID, id))
 	}
+	if uid := AuthUIDFromContext(ctx); uid != "" && !hasAttr(r, KeyAuthUID) {
+		r.AddAttrs(slog.String(KeyAuthUID, uid))
+	}
 	return h.Handler.Handle(ctx, r)
 }
 
@@ -309,71 +312,79 @@ Ini kuncinya:
 
 - `slog.InfoContext(ctx, ...)` dan `slog.LogAttrs(ctx, ...)` meneruskan `ctx`
   ke `Handler.Handle`.
-- Di `Handle`, `request_id` dibaca dari context.
+- Di `Handle`, `request_id` dan `auth_uid` dibaca dari context.
 - `r.AddAttrs(...)` menambahkannya ke record log.
-- `hasAttr` mencegah `request_id` dobel kalau sudah ada.
+- `hasAttr` mencegah field dobel kalau sudah ada.
 
 `WithAttrs` dan `WithGroup` harus di-wrap ulang karena `slog.With(...)`
 memanggil `Handler.WithAttrs(...)`. Kalau tidak di-wrap, logger turunan akan
-kehilangan `contextHandler`, dan `request_id` hilang tanpa error.
+kehilangan `contextHandler`, dan field dari context hilang tanpa error.
 
 ### Kenapa `slog.InfoContext` bisa, `slog.Info` tidak?
 
 ```go
-slog.InfoContext(ctx, "hello") // request_id ikut
-slog.Info("hello")             // request_id TIDAK ikut, karena ctx tidak ada
+slog.InfoContext(ctx, "hello") // request_id ikut (auth_uid ikut kalau ada)
+slog.Info("hello")             // keduanya TIDAK ikut, karena ctx tidak ada
 ```
 
 Aturan praktis: **di jalur request, selalu pakai varian yang membawa `ctx`**.
 
 ---
 
-## 5. Bagaimana `user_id` masuk
+## 5. Bagaimana `auth_uid` masuk
 
 Di `platform/server/middleware/requireAuth.go`, setelah token valid:
 
 ```go
-ctx = context.WithValue(ctx, identityKey{}, id)
-
-ctx = logger.WithContext(
-	ctx,
-	logger.FromContext(ctx).With("user_id", id.UID),
-)
-
+ctx = context.WithValue(ctx, identityKey{}, identity)
+ctx = logger.WithAuthUID(ctx, identity.UID)
 c.SetRequest(c.Request().WithContext(ctx))
 ```
 
 Yang terjadi:
 
-- `logger.FromContext(ctx)` mengambil logger dari context, atau `slog.Default()`
-  kalau belum ada.
-- `.With("user_id", id.UID)` membuat logger turunan dengan attribute `user_id`.
-- `logger.WithContext(ctx, ...)` menyimpan logger turunan itu ke context.
+- `identityKey{}` menyimpan objek identity, sehingga `Identity(ctx)` tetap bisa
+  dipakai untuk mengambil `firebase.Identity` lengkap.
+- `logger.WithAuthUID` menyimpan UID di context dengan typed key.
+- `contextHandler` membaca UID itu dan menambahkan field `auth_uid` ke **setiap
+  record log** yang membawa context tersebut.
 
-Lalu `AccessLog` membaca context **setelah** `next(c)` selesai:
+Jadi handler cukup menulis:
 
 ```go
-ctx := c.Request().Context()
-logger.FromContext(ctx).LogAttrs(ctx, level, "http request", attrs...)
+slog.InfoContext(ctx, "profile updated")
 ```
 
-Karena `RequireAuth` sudah mengganti request context, `AccessLog` melihat logger
-yang punya `user_id`. Jadi satu baris access log bisa berisi:
+Hasilnya:
 
 ```json
 {
+  "msg": "profile updated",
   "request_id": "...",
-  "user_id": "...",
-  "http_method": "GET",
-  "http_status": 200
+  "auth_uid": "..."
 }
 ```
 
-Catatan penting:
+Hal yang sama berlaku untuk `logger.FromContext(ctx).InfoContext(...)` dan
+`AccessLog`. Tidak perlu menambahkan `auth_uid` manual.
 
-- `slog.InfoContext(ctx, ...)` di handler **hanya** mendapat `request_id`, bukan
-  `user_id`, karena `user_id` adalah attribute pada logger turunan.
-- Kalau handler ingin ikut `user_id`, pakai `logger.FromContext(ctx)`.
+Kapan `auth_uid` muncul:
+
+| Kondisi | `auth_uid` |
+|---|---|
+| Route tanpa `RequireAuth` | tidak ada |
+| `RequireAuth` sukses | ada di semua log yang memakai context |
+| `RequireAuth` gagal | tidak ada, karena UID belum terverifikasi |
+| Log tanpa context (`slog.Info`) | tidak ada |
+| `slog.InfoContext(ctx, ...)` | ada |
+| `AccessLog` | ada |
+
+Catatan keamanan:
+
+- `auth_uid` adalah UID internal Firebase, bukan email.
+- Tetap jangan jadikan `auth_uid` sebagai label Loki; simpan sebagai field.
+- Endpoint publik yang tidak memakai `RequireAuth` tidak akan punya `auth_uid`
+  walaupun request kebetulan membawa token.
 
 ---
 
@@ -409,7 +420,7 @@ Arti field-nya:
 | `http_client_ip` | IP client |
 | `http_user_agent` | User-Agent, dipotong 256 byte |
 | `request_id` | otomatis dari context |
-| `user_id` | otomatis kalau lewat `RequireAuth` |
+| `auth_uid` | otomatis kalau lewat `RequireAuth` |
 | `error` | pesan error |
 | `error_kind` | `internal`, `bad_request`, `not_found`, dst. |
 | `error_cause` | penyebab internal |
@@ -695,21 +706,21 @@ return err
 log.Info("login", "password", password)
 log.Info("request", "url", r.URL.String()) // query bisa berisi token
 
-// ❌ set request_id manual lewat logger.With
+// ❌ set request_id/auth_uid manual lewat logger.With
 log.With("request_id", id) // bisa dobel; pakai context
 ```
 
-Yang terakhir: `request_id` seharusnya hanya lewat
-`logger.WithRequestID(ctx, id)`. `hasAttr` hanya memeriksa attribute di record,
-bukan base attribute logger, jadi menambahkan `request_id` lewat `.With()` bisa
-menghasilkan dua field.
+Yang terakhir: `request_id` dan `auth_uid` seharusnya hanya lewat
+`logger.WithRequestID` / `logger.WithAuthUID`. `hasAttr` hanya memeriksa
+attribute di record, bukan base attribute logger, jadi menambahkannya lewat
+`.With()` bisa menghasilkan dua field.
 
 ### Ringkasan pemilihan API
 
 | Kebutuhan | Pakai |
 |---|---|
-| Log di jalur request | `logger.FromContext(ctx).InfoContext(ctx, ...)` |
-| Log tanpa butuh `user_id` | `slog.InfoContext(ctx, ...)` |
+| Log di jalur request (`request_id` + `auth_uid` otomatis) | `slog.InfoContext(ctx, ...)` |
+| Log dengan attribute dari logger turunan (mis. `tenant_id`) | `logger.FromContext(ctx).InfoContext(ctx, ...)` |
 | Log background job | `slog.InfoContext(ctx, ...)` / `slog.ErrorContext(...)` |
 | Tambah field per request | `logger.WithContext(ctx, logger.FromContext(ctx).With(...))` |
 | Log startup/lifecycle | logger hasil `logger.New(cfg)` atau `slog.Info` |
@@ -748,7 +759,7 @@ Yang perlu dijaga di sisi log:
 
 - jadikan label hanya field low-cardinality: `service`, `env`, `level`,
   opsional `http_route`;
-- **jangan** jadikan label: `request_id`, `user_id`, `http_path`,
+- **jangan** jadikan label: `request_id`, `auth_uid`, `http_path`,
   `http_client_ip`;
 - field tersebut taruh sebagai structured metadata / field JSON.
 
@@ -780,7 +791,7 @@ loki.process "app" {
     }
   }
 
-  // request_id/http_route tidak dijadikan label; simpan sebagai metadata.
+  // request_id/auth_uid/http_route tidak dijadikan label; simpan sebagai metadata.
   stage.structured_metadata {
     values = {
       request_id = "",
@@ -810,6 +821,7 @@ go test ./platform/logger ./platform/server/middleware -v
 Test tersebut memeriksa:
 
 - `request_id` dari header masuk ke log,
+- `auth_uid` otomatis masuk setelah `RequireAuth` sukses dan tidak ada saat auth gagal,
 - request ID berbahaya diganti,
 - panic menghasilkan satu log + stack + status 500,
 - `apperr` menghasilkan `error`, `error_kind`, `error_cause`,
@@ -906,12 +918,12 @@ slog.SetDefault(handler + base attrs)
         │    ├─ RequestID  → ctx.request_id
         │    ├─ AccessLog  → mulai timer, panggil next
         │    ├─ Recover    → tangkap panic
-        │    ├─ RequireAuth→ ctx.logger + user_id
+        │    ├─ RequireAuth→ ctx.auth_uid
         │    └─ handler/service
         │
         ├─ setiap log dengan ctx:
         │    contextHandler.Handle(ctx, record)
-        │         └─ tambah request_id
+        │         └─ tambah request_id + auth_uid
         │
         ├─ AccessLog selesai:
         │    ├─ hitung status & level
@@ -925,8 +937,9 @@ slog.SetDefault(handler + base attrs)
 Intinya:
 
 1. **Satu handler** dipasang sekali lewat `logger.New`.
-2. **`request_id` disuntik otomatis** oleh `contextHandler` dari context.
-3. **`user_id`** ditambahkan oleh `RequireAuth` sebagai logger turunan.
+2. **`request_id` dan `auth_uid` disuntik otomatis** oleh `contextHandler` dari
+   context.
+3. **`auth_uid` hanya ada** setelah `RequireAuth` berhasil.
 4. **`AccessLog` adalah satu-satunya tempat error request dicatat**.
 5. **`ErrorHandler` hanya menulis response**, supaya tidak ada log dobel.
 6. **Panic** ditangkap `Recover`, lalu dicatat `AccessLog` lengkap dengan stack.
@@ -934,5 +947,5 @@ Intinya:
    tahu apa-apa tentang Loki.
 
 Dengan pola ini, mau log dari handler, service, middleware, atau worker,
-semuanya konsisten dan bisa dikorelasikan tanpa menambahkan `request_id` manual
-di setiap call site.
+semuanya konsisten dan bisa dikorelasikan tanpa menambahkan `request_id` atau
+`auth_uid` manual di setiap call site.

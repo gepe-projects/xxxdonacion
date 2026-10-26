@@ -80,8 +80,8 @@ func AccessLog() echo.MiddlewareFunc {
 				}
 			}
 
-			// The context handler adds request_id; FromContext also carries
-			// request-scoped fields such as user_id added by RequireAuth.
+			// The context handler adds request_id and auth_uid; FromContext also
+			// carries any extra request-scoped logger attributes.
 			ctx := c.Request().Context()
 			logger.FromContext(ctx).LogAttrs(ctx, level, "http request", attrs...)
 

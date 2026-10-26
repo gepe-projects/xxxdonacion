@@ -12,6 +12,7 @@ import (
 
 	"xxxdonacion/modules/identity"
 	"xxxdonacion/platform/config"
+	"xxxdonacion/platform/firebase"
 	"xxxdonacion/platform/logger"
 	"xxxdonacion/platform/postgres"
 	"xxxdonacion/platform/redis"
@@ -44,10 +45,20 @@ func serve(cfg *config.App, log *slog.Logger) error {
 	}
 	log.Info("redis connected", "component", "redis")
 
+	fb, err := firebase.NewClient(ctx, &cfg.Firebase)
+	if err != nil {
+		return fmt.Errorf("firebase: %w", err)
+	}
+	log.Info("firebase connected", "component", "firebase")
+
 	srv := server.New(cfg)
 
 	// wiring module
-	identityModule := identity.New(identity.Dependencies{DB: pool, Redis: rdb})
+	identityModule := identity.New(identity.Dependencies{
+		DB:       pool,
+		Redis:    rdb,
+		Firebase: fb,
+	})
 
 	// register routes
 	identityModule.RegisterRoutes(srv.Echo)

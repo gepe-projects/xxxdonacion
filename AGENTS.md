@@ -44,18 +44,24 @@ Tidak ada target `make vet`; jalankan `go vet ./...` langsung.
 |---|---|
 | `cmd/app/main.go` | Entry point tipis |
 | `cmd/app/bootstrap.go` | Composition root: config, dependency, module, server |
-| `modules/<nama>/api/domain/` | Kontrak publik module (entity + interface `Service`) |
+| `modules/<nama>/api/domain/` | Kontrak publik: entity per file (`user.go`, `role.go`, dst) + interface `Service` di `service.go` |
 | `modules/<nama>/internal/delivery/http/` | Handler Echo v5 |
-| `modules/<nama>/internal/service/` | Business logic |
+| `modules/<nama>/internal/delivery/http/req/` | Struct request HTTP (JSON tag hanya di sini) |
+| `modules/<nama>/internal/service/` | Business logic + operasi Firebase Admin module |
 | `modules/<nama>/internal/repository/` | **Generated sqlc — jangan diedit** |
-| `modules/<nama>/internal/cache/` | Cache module (kalau ada) |
-| `modules/<nama>/module.go` | Wiring lokal module + registrasi route |
+| `modules/<nama>/internal/cache/` | Cache module dengan pola `Get`/`Set`/`Invalidate` |
+| `modules/<nama>/module.go` | Wiring lokal module + registrasi route user/admin |
 | `platform/*` | Infrastruktur bersama (config, logger, server, db, redis, firebase) |
-| `platform/apperr/` | Error model aplikasi |
+| `platform/apperr/` | Error model + constructor aplikasi |
+| `platform/postgres/` | Pool, `errors.go` (SQLSTATE), `type.go` (konversi pgtype) |
+| `platform/pagination/` | Cursor pagination `int64` dan `uuid` |
+| `platform/firebase/` | Verifikasi token Firebase saja |
+| `platform/server/response/` | Envelope response sukses `{"data": ...}` |
 | `platform/server/middleware/` | Request ID, access log, auth, error handler |
 | `db/postgres/migrations/` | Migrasi Goose |
 | `db/postgres/queries/<module>/` | Query sqlc per module |
 | `docs/logging.md` | Sumber kebenaran logging |
+| `docs/auth.md` | Sumber kebenaran auth, role, dan endpoint identity |
 | `.opencode/skills/` | Skill Go generik (lihat bagian Skill) |
 
 ---
@@ -72,20 +78,74 @@ delivery/http → service → repository (sqlc)
 
 Aturan:
 
-- Handler hanya parsing, validasi, memanggil service, dan menulis response.
-  **Jangan** taruh business logic di handler.
+- Handler hanya bind request, memetakan ke input domain, memanggil service, dan
+  menulis response. **Jangan** taruh business logic atau validasi bisnis di
+  handler.
+- Struct request HTTP hanya di `internal/delivery/http/req`. Struct input
+  service ada di `api/domain` dan **tidak** memakai JSON tag.
+- Validasi input adalah method domain (mis. `CreateUserInput.Validate()`), lalu
+  dipanggil service. Jangan membuat validator helper terpisah di handler.
 - Business logic ada di service.
 - Repository berisi kode generated sqlc. Jangan menambah wrapper manual atau
   mengedit file generated.
-- `api/domain` adalah kontrak publik module. Module lain hanya boleh memakai
-  kontrak ini, bukan package `internal`.
-- Module tidak boleh meng-import package `internal` module lain.
+- `api/domain` adalah kontrak publik module, dipecah per entity (`user.go`,
+  `role.go`, dst). `service.go` hanya berisi interface `Service` yang boleh
+  dipakai module lain.
+- Module lain hanya boleh memakai `api/domain`, bukan package `internal`.
+  Module tidak boleh meng-import package `internal` module lain.
 - `cmd/app/bootstrap.go` adalah satu-satunya tempat wiring semua module.
 - Jangan melakukan JOIN lintas tabel milik module berbeda; panggil service
   module pemilik data, lalu gabungkan hasilnya di layer pemanggil.
 - Jangan menulis langsung ke tabel milik module lain.
 - Jangan membuat package `util`, `common`, atau `helpers` sebagai tempat
   sampah. Taruh fungsi di package yang memiliki domainnya.
+
+### Service, repository, dan cache
+
+- Constructor service membuat `repository.New(db)` dan cache **sekali**, lalu
+  menyimpannya di struct `Service`.
+- Jangan memanggil `repository.New(...)` per request. Untuk transaksi gunakan
+  `repo.WithTx(tx)`.
+- Cache ada di `internal/cache` dengan pola `Get`/`Set`/`Invalidate`.
+- Baca cache Redis lebih dulu; database hanya di-hit saat cache miss.
+- Redis dianggap trusted: wajib private, ACL kuat, dan tidak diekspos publik.
+- `Invalidate` mengembalikan error dan retry. Mutasi role/status/delete wajib
+  fail-closed kalau invalidasi gagal; jangan menelan error cache untuk aksi
+  security.
+- `Set` boleh log-only karena DB tetap sumber kebenaran, tetapi cache stale
+  maksimal TTL.
+- Setiap mutasi user/role/status/delete wajib meng-invalidate cache sebelum dan
+  sesudah perubahan.
+- Cache diisi oleh `Authorize` saat cache miss. Jangan menulis cache dari
+  transaksi sync yang bisa selesai belakangan dan menimpa cache baru.
+
+### Auth dan Authz
+
+- Login, registrasi, OAuth, dan refresh token dilakukan Firebase Client SDK.
+  Backend hanya memverifikasi ID token.
+- `platform/firebase` hanya untuk verifikasi token. Operasi Firebase Admin
+  (create/disable/delete user) ada di service module identity, bukan di
+  `platform/firebase`.
+- `RequireAuth` hanya memverifikasi identitas. Jangan menaruh role di token,
+  context, atau middleware auth.
+- Module lain yang butuh authz memakai kontrak publik identity:
+  `domain.Service.Authorize(ctx, uid, roles...)`. Implementasi wajib Redis-first,
+  fallback database. Module lain tidak boleh query tabel `identity.*`.
+- Role default user baru adalah `USER`. Tidak ada seed user di migration;
+  SUPER_ADMIN pertama dibuat manual dari database.
+- Create user admin **tidak menerima role dari input** dan selalu memberi
+  `USER`. Perubahan role hanya lewat endpoint roles.
+- Create user memakai urutan DB-first: insert baris dengan UID sendiri, lalu
+  buat Firebase user dengan UID yang sama, baru commit. Email yang sudah ada
+  harus ditolak sebelum Firebase disentuh.
+- `ADMIN` mengelola `USER`; `SUPER_ADMIN` mengelola `USER` dan `ADMIN`. User
+  tidak boleh mengubah status/role sendiri, dan `SUPER_ADMIN` tidak bisa diubah
+  lewat API.
+- Endpoint admin dipisah path (`/identities/admin/...`) dari endpoint user dan
+  memakai `RequireAuthRevoked`. Prefix route bukan batas keamanan; otorisasi
+  tetap dicek di service.
+- `/sync` dan endpoint admin wajib memakai rate limit Redis.
+- Detail kontrak ada di `docs/auth.md`.
 
 ---
 
@@ -135,6 +195,8 @@ Aturan tambahan:
 
 - Jangan memakai `*pgtype.Text` / `*pgtype.UUID` hanya untuk nullable;
   `pgtype.Text` / `pgtype.UUID` sudah mewakili null.
+- Gunakan helper `platform/postgres/type.go` untuk konversi nullable, bukan
+  helper lokal di service.
 - Jangan mengembalikan `(nil, nil)`. Gunakan error yang jelas.
 - Jangan memakai pointer hanya untuk "menghemat copy"; ukur dulu.
 - Receiver harus konsisten: kalau satu method memakai pointer receiver,
@@ -148,10 +210,18 @@ Aturan tambahan:
 ## Error, Response, dan Logging
 
 - Error aplikasi memakai `platform/apperr`.
-- Di service, bungkus cause dengan `apperr.Wrap(err, kind, "pesan user")`.
+- Gunakan constructor: `apperr.BadRequest`, `apperr.Unauthorized`,
+  `apperr.Forbidden`, `apperr.NotFound`, `apperr.Conflict`, dan
+  `apperr.Internal(err, "aksi")`.
+- Jangan membuat helper error lokal seperti `internalErr`, `forbidden`, atau
+  `conflict` di service/module. Kalau dipakai lintas module, taruh di `apperr`.
+- `apperr.Wrap(err, kind, message)` hanya untuk kasus yang butuh kind/message
+  custom di luar constructor.
 - Di handler, cukup `return err`; `middleware.ErrorHandler` yang memetakan ke
   response JSON.
-- Bentuk response saat ini: `{"message": "..."}` dan
+- Semua response sukses wajib memakai `platform/server/response`:
+  `{"data": ...}`. `data` boleh object, array, atau `null` (mis. delete).
+- Error response tetap `{"message": "..."}` dan
   `{"message": "...", "errors": [...]}` untuk validasi. Jangan menambah field
   baru tanpa alasan.
 - Pesan user-facing berbahasa Inggris. Komentar dan pesan internal boleh
@@ -168,7 +238,7 @@ Aturan tambahan:
 - Jangan log token, password, secret, authorization header, cookie, credential,
   atau private key.
 - `RequireAuth` hanya memverifikasi identitas, bukan otorisasi. Authorization
-  dicek di service/handler sesuai kebutuhan.
+  dicek di service/handler, dan module lain memakai `domain.Service.Authorize`.
 - Untuk detail logging, baca `docs/logging.md`; jangan menduplikasi isinya di
   sini.
 
@@ -187,6 +257,21 @@ Aturan tambahan:
   lalu `make migrate-up`.
 - Jangan mengubah migrasi yang sudah di-apply di environment bersama.
 - Jangan memakai ORM atau query builder baru tanpa diskusi.
+- Cek error database lewat `platform/postgres/errors.go`:
+  `postgres.IsNoRows`, `postgres.IsUniqueViolation`,
+  `postgres.IsForeignKeyViolation`, dst. Jangan cek `pgconn.PgError` atau
+  `pgx.ErrNoRows` langsung di service.
+- Konversi nilai ke/dari `pgtype` lewat `platform/postgres/type.go`:
+  `postgres.ToPgText`, `postgres.ToPgTextPtr`, `postgres.ToPgBool`,
+  `postgres.ToPgInt4`, `postgres.ToPgInt8`, `postgres.ToPgUUID`, dan `From*`.
+  Jangan membuat helper lokal seperti `nameValue` atau cast pgtype manual.
+- Cursor pagination memakai `platform/pagination`:
+  `EncodeInt64`/`DecodeInt64` atau `EncodeUUID`/`DecodeUUID`, `ParseLimit`,
+  `Page[T]`, dan `NewPage`.
+- Query keyset mengambil `limit+1` baris, lalu `NewPage` memotong dan mengisi
+  `next_cursor`. Jangan kembali ke offset pagination untuk list baru.
+- Untuk list yang diurutkan berdasarkan `id` UUID, gunakan `uuid.NewV7()` agar
+  urutan ID mengikuti waktu.
 
 ---
 
@@ -198,6 +283,9 @@ Aturan tambahan:
 - Gunakan `t.Helper()` di helper test.
 - Gunakan `httptest` untuk handler/middleware.
 - Assert behavior dan status code, bukan string message yang panjang.
+- Test validasi domain di package `api/domain`, bukan lewat handler.
+- Test helper platform (`apperr`, `postgres`, `pagination`, `response`) di
+  package masing-masing.
 - Untuk perubahan yang menyentuh error/logging, tambahkan test di package yang
   relevan.
 - Jangan memakai `time.Sleep` untuk memajukan waktu; gunakan mekanisme yang
@@ -259,6 +347,11 @@ contoh konflik yang harus di-override:
   hanya demi mengikuti skill.
 - Jangan menambah dependency, logger, atau middleware baru hanya karena skill
   menyebutkannya.
+- Jangan membuat interface `UserAdmin`/abstraksi Firebase Admin di platform;
+  cukup concrete `*auth.Client` di service module.
+- Jangan membuat helper error lokal di module; pakai constructor `apperr`.
+- Jangan mengganti envelope response sukses `{"data": ...}` dengan bentuk lain
+  tanpa diskusi.
 - Ponytail tidak boleh menghapus validasi, error handling, security, atau test.
   Aturan repo tetap berlaku meskipun diff menjadi lebih besar.
 
@@ -273,7 +366,23 @@ contoh konflik yang harus di-override:
 - [ ] Tidak ada file generated sqlc yang diedit.
 - [ ] Tidak ada `os.Getenv` baru di luar `platform/config`.
 - [ ] Tidak ada secret/token yang di-log.
-- [ ] Error baru memakai `apperr` dan pesan user-facing bahasa Inggris.
+- [ ] `.env` dan file service account mode 600; secret production lewat secret manager.
+- [ ] Error baru memakai constructor `apperr` dan pesan user-facing bahasa Inggris.
+- [ ] Tidak ada helper error lokal (`internalErr`, `forbidden`, dst) di service.
+- [ ] Response sukses baru memakai envelope `platform/server/response`.
+- [ ] Kontrak domain dipecah per entity; `service.go` hanya interface.
+- [ ] Request struct HTTP ada di `delivery/http/req`; input domain tanpa JSON tag.
+- [ ] Validasi input ada di method domain, bukan di handler/service helper.
+- [ ] Endpoint admin dipisah path dan otorisasi tetap dicek di service.
+- [ ] Repository dan cache dibuat sekali di constructor service; transaksi pakai `repo.WithTx`.
+- [ ] Error/pgtype Postgres memakai helper `platform/postgres`.
+- [ ] Authz module lain memakai `domain.Service.Authorize` (Redis-first), bukan query tabel identity.
+- [ ] Mutasi user/role/status/delete meng-invalidate cache; kegagalan invalidasi fail-closed.
+- [ ] Create user admin memakai DB-first, UID Firebase yang sama, dan selalu `USER`.
+- [ ] Endpoint admin memakai `RequireAuthRevoked` dan rate limit Redis.
+- [ ] Cursor pagination baru memakai `platform/pagination`.
+- [ ] Operasi Firebase Admin ada di service module, bukan `platform/firebase`.
+- [ ] Config production menolak kredensial default dan `APP_ENV` kosong.
 - [ ] Handler tetap tipis; business logic ada di service.
 - [ ] Perubahan tidak melebar ke kode yang tidak terkait.
 - [ ] Dokumentasi diperbarui kalau perilaku berubah.

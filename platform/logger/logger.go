@@ -18,6 +18,10 @@ import (
 // pipelines (e.g. Grafana Alloy/Loki) will query it.
 const KeyRequestID = "request_id"
 
+// KeyAuthUID is attached to every log record whose context has a verified
+// Firebase UID. It is only present on routes that ran RequireAuth successfully.
+const KeyAuthUID = "auth_uid"
+
 // New builds the application logger, installs it as slog's default, and
 // returns it. Call it once after config is loaded, before anything else logs.
 func New(cfg *config.App) *slog.Logger {

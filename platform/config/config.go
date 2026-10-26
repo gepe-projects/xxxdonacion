@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -20,7 +21,7 @@ func Load() (*App, error) {
 }
 
 type App struct {
-	Environment string `env:"APP_ENV"  envDefault:"development"`
+	Environment string `env:"APP_ENV"` // wajib: development | staging | production | test
 	Name        string `env:"APP_NAME" envDefault:"app"`
 	Port        int    `env:"APP_PORT" envDefault:"8080"`
 	// Empty = development => debug, otherwise => info.
@@ -54,6 +55,13 @@ type Firebase struct {
 }
 
 func (app *App) validate() error {
+	env := strings.ToLower(strings.TrimSpace(app.Environment))
+	switch env {
+	case "development", "staging", "production", "test":
+	default:
+		return fmt.Errorf("APP_ENV must be development|staging|production|test")
+	}
+
 	if strings.TrimSpace(app.Database.URL) == "" {
 		return fmt.Errorf("DB_URL is required")
 	}
@@ -72,6 +80,35 @@ func (app *App) validate() error {
 	case "", "text", "json":
 	default:
 		return fmt.Errorf("APP_LOG_FORMAT must be text|json, got %q", app.LogFormat)
+	}
+
+	if env != "development" {
+		return app.validateProduction()
+	}
+	return nil
+}
+
+func (app *App) validateProduction() error {
+	dbURL, err := url.Parse(app.Database.URL)
+	if err != nil || (dbURL.Scheme != "postgres" && dbURL.Scheme != "postgresql") || dbURL.Host == "" {
+		return fmt.Errorf("DB_URL must be a valid postgres URL")
+	}
+	if dbURL.User == nil {
+		return fmt.Errorf("DB_URL must include a database user and password")
+	}
+
+	user := dbURL.User.Username()
+	password, _ := dbURL.User.Password()
+	if user == "" || strings.EqualFold(user, "root") || password == "" || password == "root" {
+		return fmt.Errorf("DB_URL must not use the default database credentials")
+	}
+	if strings.TrimSpace(app.Redis.Password) == "" || strings.EqualFold(app.Redis.Password, "root") {
+		return fmt.Errorf("REDIS_PASSWORD must be set to a non-default value")
+	}
+	for _, origin := range app.CORSOrigins {
+		if strings.TrimSpace(origin) == "*" {
+			return fmt.Errorf("APP_CORS_ORIGINS cannot contain * outside development")
+		}
 	}
 	return nil
 }
