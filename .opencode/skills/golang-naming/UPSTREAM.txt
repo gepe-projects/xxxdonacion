@@ -1,0 +1,5 @@
+source: https://github.com/samber/cc-skills-golang
+commit: 246b6c4c1ab3077dee114beb9ade3bb0527dfebc
+date: 2026-10-23
+license: MIT
+skill: golang-naming

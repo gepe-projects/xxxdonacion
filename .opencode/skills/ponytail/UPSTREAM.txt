@@ -1,0 +1,5 @@
+source: https://github.com/DietrichGebert/ponytail
+commit: 09c434ab73ca43761c5d8b0c5d341926c2fba710
+date: 2026-10-18
+license: MIT
+skill: ponytail
