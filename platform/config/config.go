@@ -23,8 +23,9 @@ type App struct {
 	Environment string `env:"APP_ENV"  envDefault:"development"`
 	Name        string `env:"APP_NAME" envDefault:"app"`
 	Port        int    `env:"APP_PORT" envDefault:"8080"`
-	LogLevel    string `env:"APP_LOG_LEVEL" envDefault:"info"`
-	LogFormat   string `env:"APP_LOG_FORMAT" envDefault:"text"`
+	// Empty = development => debug, otherwise => info.
+	LogLevel  string `env:"APP_LOG_LEVEL"`
+	LogFormat string `env:"APP_LOG_FORMAT" envDefault:"text"`
 	// CORSOrigins enables CORS when set, e.g. APP_CORS_ORIGINS=http://localhost:3000,https://app.example.com
 	CORSOrigins []string `env:"APP_CORS_ORIGINS"`
 
@@ -61,6 +62,16 @@ func (app *App) validate() error {
 	}
 	if strings.TrimSpace(app.Firebase.CredentialsFile) == "" {
 		return fmt.Errorf("FIREBASE_CREDENTIALS_FILE is required")
+	}
+	switch strings.ToLower(strings.TrimSpace(app.LogLevel)) {
+	case "", "debug", "info", "warn", "warning", "error":
+	default:
+		return fmt.Errorf("APP_LOG_LEVEL must be one of debug|info|warn|error, got %q", app.LogLevel)
+	}
+	switch strings.ToLower(strings.TrimSpace(app.LogFormat)) {
+	case "", "text", "json":
+	default:
+		return fmt.Errorf("APP_LOG_FORMAT must be text|json, got %q", app.LogFormat)
 	}
 	return nil
 }

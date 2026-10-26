@@ -39,10 +39,14 @@ func New(cfg *config.App) *Server {
 	e := echo.NewWithConfig(echo.Config{
 		Logger: slog.Default(),
 	})
-	e.Use(emw.Recover())
+	// Order matters: RequestID exposes request_id to AccessLog, and AccessLog
+	// wraps Recover so panics are still reported as a 500 access-log entry.
 	e.Use(mw.RequestID())
-	e.Use(mw.ContextLogger)
 	e.Use(mw.AccessLog())
+	e.Use(emw.RecoverWithConfig(emw.RecoverConfig{
+		StackSize:       16 << 10,
+		DisableStackAll: true,
+	}))
 	e.Use(emw.BodyLimit(bodyLimitBytes))
 	// set global middleware
 	e.HTTPErrorHandler = mw.ErrorHandler()

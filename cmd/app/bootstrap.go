@@ -7,12 +7,12 @@ import (
 	"log/slog"
 	"os"
 	"time"
-	"xxxdonacion/platform/logger"
 
 	"github.com/joho/godotenv"
 
 	"xxxdonacion/modules/identity"
 	"xxxdonacion/platform/config"
+	"xxxdonacion/platform/logger"
 	"xxxdonacion/platform/postgres"
 	"xxxdonacion/platform/redis"
 	"xxxdonacion/platform/server"
@@ -23,12 +23,12 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
-	logger.New(cfg)
+	log := logger.New(cfg)
 
-	return serve(cfg)
+	return serve(cfg, log)
 }
 
-func serve(cfg *config.App) error {
+func serve(cfg *config.App, log *slog.Logger) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -36,13 +36,13 @@ func serve(cfg *config.App) error {
 	if err != nil {
 		return fmt.Errorf("postgres: %w", err)
 	}
-	slog.Info("postgres connected")
+	log.Info("postgres connected", "component", "postgres")
 
 	rdb, err := redis.New(ctx, cfg.Redis)
 	if err != nil {
 		return fmt.Errorf("redis: %w", err)
 	}
-	slog.Info("redis connected")
+	log.Info("redis connected", "component", "redis")
 
 	srv := server.New(cfg)
 
@@ -52,9 +52,15 @@ func serve(cfg *config.App) error {
 	// register routes
 	identityModule.RegisterRoutes(srv.Echo)
 
-	slog.Info("http server listening", "addr", cfg.Port, "env", cfg.Environment)
+	addr := fmt.Sprintf(":%d", cfg.Port)
+	log.Info("http server starting", "component", "http", "addr", addr)
 
-	return srv.Start()
+	if err := srv.Start(); err != nil {
+		return fmt.Errorf("http server: %w", err)
+	}
+
+	log.Info("http server stopped", "component", "http")
+	return nil
 }
 
 func loadConfig() (*config.App, error) {

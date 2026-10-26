@@ -4,31 +4,24 @@ import (
 	"errors"
 	"log/slog"
 	"time"
+	"unicode/utf8"
 
 	"github.com/labstack/echo/v5"
+	echomw "github.com/labstack/echo/v5/middleware"
 
 	"xxxdonacion/platform/apperr"
 	"xxxdonacion/platform/logger"
 )
 
-func ContextLogger(next echo.HandlerFunc) echo.HandlerFunc {
-	return func(c *echo.Context) error {
-		ctx := c.Request().Context()
-		reqId, _ := ctx.Value("request-id").(string)
+const maxUserAgentLen = 256
 
-		log := slog.With(slog.String("request-id", reqId))
-
-		c.SetRequest(c.Request().WithContext(logger.WithContext(ctx, log)))
-
-		return next(c)
-	}
-}
-
-// AccessLog writes one structured line per request, correlated by request_id.
-// Place it outside Recover so a recovered panic is reported as a 500 here.
+// AccessLog writes one structured line per request. It must be installed
+// outside Recover (Recover is the inner middleware) so a recovered panic still
+// produces an access log line with status 500 and the stack trace.
 //
 // This is the single place where request errors are logged: the HTTP error
-// handler only maps errors to a response.
+// handler only maps errors to a response, and libraries return errors instead
+// of logging them. That keeps every failure to exactly one log entry.
 func AccessLog() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c *echo.Context) error {
@@ -43,28 +36,55 @@ func AccessLog() echo.MiddlewareFunc {
 			case status >= 400:
 				level = slog.LevelWarn
 			}
-			ctx := c.Request().Context()
-			attrs := []slog.Attr{
-				slog.String("method", c.Request().Method),
-				slog.String("path", c.Request().URL.Path),
-				slog.String("route", c.Path()),
-				slog.Int("status", status),
-				slog.Int64("latency_ms", time.Since(start).Milliseconds()),
+
+			route := c.Path()
+			if route == "" {
+				route = "unmatched"
 			}
-			if err != nil {
+
+			var responseBytes int64
+			if res, _ := echo.UnwrapResponse(c.Response()); res != nil {
+				responseBytes = res.Size
+			}
+
+			attrs := []slog.Attr{
+				slog.String("http_method", c.Request().Method),
+				slog.String("http_route", route),
+				slog.String("http_path", c.Request().URL.Path),
+				slog.Int("http_status", status),
+				slog.Float64("duration_ms", float64(time.Since(start).Microseconds())/1000),
+				slog.Int64("http_response_bytes", responseBytes),
+				slog.String("http_client_ip", c.RealIP()),
+				slog.String("http_user_agent", truncate(c.Request().UserAgent(), maxUserAgentLen)),
+			}
+
+			// PanicStackError embeds the whole stack in Error(); keep the stack
+			// in its own field so the error message stays readable and queryable.
+			var panicErr *echomw.PanicStackError
+			if errors.As(err, &panicErr) {
+				attrs = append(attrs,
+					slog.String("error", panicErr.Err.Error()),
+					slog.String("stack", string(panicErr.Stack)),
+				)
+			} else if err != nil {
 				attrs = append(attrs, slog.String("error", err.Error()))
 
 				// apperr.Error() only exposes the user-facing message, so the
 				// wrapped cause has to be logged explicitly to keep the detail.
 				var appErr *apperr.Error
 				if errors.As(err, &appErr) {
-					attrs = append(attrs, slog.String("kind", appErr.Kind.String()))
+					attrs = append(attrs, slog.String("error_kind", appErr.Kind.String()))
 					if cause := appErr.Unwrap(); cause != nil {
-						attrs = append(attrs, slog.String("cause", cause.Error()))
+						attrs = append(attrs, slog.String("error_cause", cause.Error()))
 					}
 				}
 			}
-			logger.FromContext(ctx).LogAttrs(ctx, level, "request", attrs...)
+
+			// The context handler adds request_id; FromContext also carries
+			// request-scoped fields such as user_id added by RequireAuth.
+			ctx := c.Request().Context()
+			logger.FromContext(ctx).LogAttrs(ctx, level, "http request", attrs...)
+
 			return err
 		}
 	}
@@ -81,4 +101,15 @@ func statusOf(c *echo.Context, err error) int {
 	}
 	_, status := echo.ResolveResponseStatus(c.Response(), err)
 	return status
+}
+
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	// Do not cut a multi-byte rune in half.
+	for max > 0 && !utf8.RuneStart(s[max]) {
+		max--
+	}
+	return s[:max]
 }
