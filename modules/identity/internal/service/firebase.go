@@ -9,9 +9,8 @@ import (
 	"xxxdonacion/platform/apperr"
 )
 
-func (s *Service) createFirebaseUser(ctx context.Context, uid string, in domain.CreateUserInput) (string, error) {
+func (s *Service) createFirebaseUser(ctx context.Context, in domain.CreateUserInput) (string, error) {
 	params := (&firebaseauth.UserToCreate{}).
-		UID(uid).
 		Email(in.Email).
 		EmailVerified(true)
 	if in.Name != "" {
@@ -28,8 +27,8 @@ func (s *Service) createFirebaseUser(ctx context.Context, uid string, in domain.
 			return "", apperr.Conflict("email already exists")
 		case firebaseauth.IsUIDAlreadyExists(err):
 			return "", apperr.Conflict("firebase account already exists")
-		case firebaseauth.IsInvalidEmail(err):
-			return "", apperr.BadRequest("invalid email")
+		// case firebaseauth.IsInvalidEmail(err): deprecated
+		// 	return "", apperr.BadRequest("invalid email")
 		default:
 			return "", apperr.Internal(err, "create firebase user")
 		}

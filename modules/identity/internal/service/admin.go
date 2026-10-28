@@ -24,9 +24,13 @@ func (s *Service) CreateUser(
 		return nil, err
 	}
 
-	// DB-first: email yang sudah ada ditolak sebelum Firebase disentuh.
-	// UID dibuat sendiri supaya Firebase dan database memakai identitas yang sama.
-	uid := uuid.NewV7().String()
+	// create firebase dulu, karna biar authid tetep dari google, jadi create dulu di firebase
+	firebaseUID, err := s.createFirebaseUser(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+
+	// kalo ga ada error insert ke db
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return nil, apperr.Internal(err, "begin create user transaction")
@@ -36,7 +40,7 @@ func (s *Service) CreateUser(
 	q := s.repo.WithTx(tx)
 	user, err := q.CreateUserIfAbsent(ctx, repository.CreateUserIfAbsentParams{
 		ID:     uuid.NewV7(),
-		AuthID: postgres.ToPgText(uid),
+		AuthID: postgres.ToPgText(firebaseUID),
 		Email:  in.Email,
 		Name:   postgres.ToPgTextPtr(&in.Name),
 		Status: string(domain.StatusActive),
@@ -55,15 +59,10 @@ func (s *Service) CreateUser(
 		return nil, apperr.Internal(err, "grant user role")
 	}
 
-	// Firebase user baru dibuat setelah baris DB ada di transaksi yang belum commit.
-	if _, err := s.createFirebaseUser(ctx, uid, in); err != nil {
-		return nil, err
-	}
-
 	if err := tx.Commit(ctx); err != nil {
 		// Akun Firebase tidak boleh hidup tanpa baris database. Kalau baris
 		// di-rollback, sync berikutnya hanya akan membuat user USER, bukan admin.
-		if cleanupErr := s.deleteFirebaseUser(ctx, uid); cleanupErr != nil {
+		if cleanupErr := s.deleteFirebaseUser(ctx, firebaseUID); cleanupErr != nil {
 			return nil, errors.Join(apperr.Internal(err, "commit create user transaction"), cleanupErr)
 		}
 		return nil, apperr.Internal(err, "commit create user transaction")
