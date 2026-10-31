@@ -62,7 +62,7 @@ Tidak ada target `make vet`; jalankan `go vet ./...` langsung.
 | `db/postgres/queries/<module>/` | Query sqlc per module |
 | `docs/logging.md` | Sumber kebenaran logging |
 | `docs/auth.md` | Sumber kebenaran auth, role, dan endpoint identity |
-| `.opencode/skills/` | Skill Go generik (lihat bagian Skill) |
+| `.claude/skills/` | Skill generik project (lihat bagian Skill) |
 
 ---
 
@@ -333,6 +333,14 @@ Skill berikut bersifat generik dan bisa dipakai saat relevan:
 - `golang-structs-interfaces` — pointer receiver, interface, struct tag.
 - `golang-error-handling` — wrapping, `errors.Is/As`, panic/recover, `slog`.
 - `golang-naming` — nama package, tipe, function, test.
+- `grill-with-docs` — interview desain bertahap; komposisi dari `grilling` +
+  `domain-modeling`.
+- `grilling` — mesin interview satu-pertanyaan-per-giliran.
+- `domain-modeling` — glosarium domain dan ADR.
+
+Skill desain di atas default menulis `GLOSSARY.md` di root dan ADR di
+`docs/adr/`. Jangan sampai membuat sumber kebenaran kedua: ikuti lokasi `docs/`
+yang sudah ada, dan aturan `AGENTS.md` tetap menang.
 
 Kalau skill bertentangan dengan `AGENTS.md`, **`AGENTS.md` menang**. Beberapa
 contoh konflik yang harus di-override:
