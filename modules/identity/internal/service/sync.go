@@ -27,7 +27,7 @@ func (s *Service) Sync(ctx context.Context, caller domain.Principal) (*domain.Us
 	if err != nil {
 		return nil, apperr.Internal(err, "begin sync transaction")
 	}
-	// Rollback is a no-op after a successful commit.
+	// Rollback tidak berdampak setelah commit yang sukses.
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	q := s.repo.WithTx(tx)
@@ -118,7 +118,7 @@ func (s *Service) findOrCreateUser(
 		return repository.IdentityUser{}, apperr.Internal(err, "create user")
 	}
 
-	// Another transaction inserted a row with the same auth_id or email.
+	// Transaksi lain sudah memasukkan baris dengan auth_id atau email yang sama.
 	return s.resolveSyncConflict(ctx, q, caller)
 }
 
@@ -146,7 +146,7 @@ func (s *Service) linkOrConflict(
 		return repository.IdentityUser{}, apperr.Internal(err, "link auth id")
 	}
 
-	// Lost the race: another request linked the row first.
+	// Kalah race: request lain lebih dulu me-link baris ini.
 	return s.resolveSyncConflict(ctx, q, caller)
 }
 
@@ -165,28 +165,28 @@ func (s *Service) resolveSyncConflict(
 		}
 
 		user, err = q.GetUserByEmail(ctx, caller.Email)
-		switch {
-		case err == nil:
-			if user.AuthID.Valid {
-				return repository.IdentityUser{}, apperr.Conflict("email is already linked to another account")
-			}
-			linked, linkErr := q.LinkUserAuthID(ctx, repository.LinkUserAuthIDParams{
-				ID:     user.ID,
-				AuthID: postgres.ToPgText(caller.UID),
-			})
-			switch {
-			case linkErr == nil:
-				return linked, nil
-			case postgres.IsNoRows(linkErr):
-				// Another request linked it between select and update.
-			default:
-				return repository.IdentityUser{}, apperr.Internal(linkErr, "link auth id")
-			}
-		case postgres.IsNoRows(err):
-			// Row still absent; try the next iteration.
-		default:
+		if postgres.IsNoRows(err) {
+			// Baris masih belum ada; coba iterasi berikutnya.
+			continue
+		}
+		if err != nil {
 			return repository.IdentityUser{}, apperr.Internal(err, "get user by email")
 		}
+		if user.AuthID.Valid {
+			return repository.IdentityUser{}, apperr.Conflict("email is already linked to another account")
+		}
+
+		linked, linkErr := q.LinkUserAuthID(ctx, repository.LinkUserAuthIDParams{
+			ID:     user.ID,
+			AuthID: postgres.ToPgText(caller.UID),
+		})
+		if linkErr == nil {
+			return linked, nil
+		}
+		if !postgres.IsNoRows(linkErr) {
+			return repository.IdentityUser{}, apperr.Internal(linkErr, "link auth id")
+		}
+		// Request lain sudah me-link baris ini antara select dan update.
 	}
 
 	return repository.IdentityUser{}, apperr.Conflict("too many conflicts; please retry")

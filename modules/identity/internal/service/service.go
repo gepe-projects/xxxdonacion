@@ -12,7 +12,7 @@ import (
 	"xxxdonacion/modules/identity/internal/repository"
 )
 
-// DB adalah seam kecil supaya service bisa dites dengan pgxmock. Implementasi
+// DB adalah seam kecil supaya service bisa dites dengan fakeDB. Implementasi
 // produksinya tetap *pgxpool.Pool.
 type DB interface {
 	repository.DBTX

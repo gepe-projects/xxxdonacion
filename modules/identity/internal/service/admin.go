@@ -27,7 +27,7 @@ func (s *Service) CreateUser(
 		return nil, err
 	}
 
-	// Cek email di luar transaksi supaya email yang sudah terdaftar ditolak
+	// Email dicek di luar transaksi agar email yang sudah terdaftar ditolak
 	// sebelum Firebase membuat akun yang nanti harus dibersihkan.
 	if _, err := s.repo.GetUserByEmail(ctx, in.Email); err == nil {
 		return nil, apperr.Conflict("email already exists")
@@ -84,7 +84,7 @@ func (s *Service) CreateUser(
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		// Commit yang gagal sudah menutup transaksi; rollback yang di-defer
+		// Commit yang gagal sudah menutup transaksi; rollback yang ditunda
 		// hanya no-op. Akun Firebase tidak boleh hidup tanpa baris database.
 		return nil, s.joinFirebaseCleanup(
 			ctx,
@@ -96,9 +96,9 @@ func (s *Service) CreateUser(
 	return toUser(user, []domain.Role{domain.RoleUser}), nil
 }
 
-// abortCreateUser me-rollback transaksi secara eksplisit sebelum cleanup.
-// Rollback harus selesai lebih dulu supaya baris yang seharusnya dibatalkan
-// tidak dianggap milik alur lain oleh guard cleanupFirebaseUser.
+// abortCreateUser melakukan rollback transaksi secara eksplisit sebelum
+// cleanup. Rollback harus selesai lebih dulu agar baris yang seharusnya
+// dibatalkan tidak dianggap milik alur lain oleh guard cleanupFirebaseUser.
 func (s *Service) abortCreateUser(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -281,8 +281,8 @@ func (s *Service) DeleteUser(
 	}
 
 	if target.AuthID != "" {
-		// Hapus cache sebelum delete supaya kegagalan invalidasi tidak
-		// meninggalkan user yang sudah dihapus tetap punya akses.
+		// Cache dihapus sebelum penghapusan agar kegagalan invalidasi tidak
+		// meninggalkan user yang sudah dihapus tetap memiliki akses.
 		if err := s.cache.Invalidate(ctx, target.AuthID); err != nil {
 			return apperr.Internal(err, "invalidate user cache")
 		}
@@ -294,8 +294,8 @@ func (s *Service) DeleteUser(
 		return apperr.Internal(err, "delete user")
 	}
 	if target.AuthID != "" {
-		// Invalidate lagi untuk menutup request yang sempat mengisi cache
-		// lama di antara invalidasi pertama dan delete database.
+		// Invalidasi ulang untuk menutup request yang sempat mengisi cache
+		// lama di antara invalidasi pertama dan penghapusan database.
 		if err := s.cache.Invalidate(ctx, target.AuthID); err != nil {
 			return apperr.Internal(err, "invalidate user cache")
 		}
@@ -331,16 +331,7 @@ func (s *Service) ListUsers(
 			return pagination.Page[domain.User]{}, apperr.Internal(err, "list users")
 		}
 		for _, row := range rows {
-			users = append(users, domain.User{
-				ID:        row.ID,
-				AuthID:    row.AuthID.String,
-				Email:     row.Email,
-				Name:      row.Name.String,
-				Status:    domain.Status(row.Status),
-				Roles:     toRoles(row.Roles),
-				CreatedAt: row.CreatedAt.Time,
-				UpdatedAt: row.UpdatedAt.Time,
-			})
+			users = append(users, userFromListAfterRow(row))
 		}
 	} else {
 		rows, err := s.repo.ListUsers(ctx, fetch)
@@ -348,22 +339,39 @@ func (s *Service) ListUsers(
 			return pagination.Page[domain.User]{}, apperr.Internal(err, "list users")
 		}
 		for _, row := range rows {
-			users = append(users, domain.User{
-				ID:        row.ID,
-				AuthID:    row.AuthID.String,
-				Email:     row.Email,
-				Name:      row.Name.String,
-				Status:    domain.Status(row.Status),
-				Roles:     toRoles(row.Roles),
-				CreatedAt: row.CreatedAt.Time,
-				UpdatedAt: row.UpdatedAt.Time,
-			})
+			users = append(users, userFromListRow(row))
 		}
 	}
 
 	return pagination.NewPage(users, limit, func(user domain.User) string {
 		return pagination.EncodeUUID(user.ID)
 	}), nil
+}
+
+// userFromListRow memetakan baris ListUsers menjadi domain.User.
+func userFromListRow(row repository.ListUsersRow) domain.User {
+	return *toUser(repository.IdentityUser{
+		ID:        row.ID,
+		AuthID:    row.AuthID,
+		Email:     row.Email,
+		Name:      row.Name,
+		Status:    row.Status,
+		CreatedAt: row.CreatedAt,
+		UpdatedAt: row.UpdatedAt,
+	}, toRoles(row.Roles))
+}
+
+// userFromListAfterRow memetakan baris ListUsersAfter menjadi domain.User.
+func userFromListAfterRow(row repository.ListUsersAfterRow) domain.User {
+	return *toUser(repository.IdentityUser{
+		ID:        row.ID,
+		AuthID:    row.AuthID,
+		Email:     row.Email,
+		Name:      row.Name,
+		Status:    row.Status,
+		CreatedAt: row.CreatedAt,
+		UpdatedAt: row.UpdatedAt,
+	}, toRoles(row.Roles))
 }
 
 func (s *Service) authorizeAdmin(

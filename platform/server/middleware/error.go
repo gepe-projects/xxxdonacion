@@ -2,8 +2,10 @@ package middleware
 
 import (
 	"errors"
-	"github.com/labstack/echo/v5"
 	"net/http"
+
+	"github.com/labstack/echo/v5"
+
 	"xxxdonacion/platform/apperr"
 )
 
@@ -26,7 +28,8 @@ func ErrorHandler() echo.HTTPErrorHandler {
 }
 
 func renderError(err error) (int, errorResponse) {
-	if appErr, ok := errors.AsType[*apperr.Error](err); ok {
+	var appErr *apperr.Error
+	if errors.As(err, &appErr) {
 		payload := errorResponse{
 			Message: appErr.Message,
 		}
