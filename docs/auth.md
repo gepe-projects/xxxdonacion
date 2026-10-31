@@ -17,9 +17,9 @@ backend). Baca ini sebelum mengubah endpoint identity.
   migration. Role ini tidak bisa diberikan, diubah, atau dihapus lewat API.
 - `platform/firebase` hanya menangani verifikasi token. Operasi Firebase Admin
   (create/disable/delete) ada di `modules/identity/internal/service/firebase.go`.
-- Struct request HTTP ada di delivery (`createUserRequest`, dst). Struct input
-  service ada di domain (`CreateUserInput`, dst). Handler memetakan request ke
-  input domain.
+- Struct request HTTP ada di `internal/delivery/http/req` (`req.CreateUser`,
+  dst). Struct input service ada di domain (`CreateUserInput`, dst). Handler
+  memetakan request ke input domain.
 - Validasi input ada di method domain (`CreateUserInput.Validate`,
   `UpdateStatusInput.Validate`, `UpdateRolesInput.Validate`), bukan di handler.
 - Semua response sukses memakai envelope `{"data": ...}` dari
@@ -63,7 +63,7 @@ Endpoint user dan admin dipisah path. Semua membutuhkan Bearer ID token.
 | Method | Path | Fungsi |
 |---|---|---|
 | POST | `/identities/admin/users` | Buat user di Firebase + database |
-| GET | `/identities/admin/users` | List user (`limit`, `offset`) |
+| GET | `/identities/admin/users` | List user (`limit`, `cursor`) |
 | PATCH | `/identities/admin/users/:id/status` | Set `ACTIVE`/`DISABLED` |
 | PUT | `/identities/admin/users/:id/roles` | Ganti seluruh role user |
 | DELETE | `/identities/admin/users/:id` | Hapus user di Firebase + database |
@@ -88,7 +88,10 @@ Alur dalam satu transaksi:
    - tidak ada → buat user `ACTIVE` + role `USER`.
 3. Kembalikan profil dan role terbaru.
 
-Operasi idempoten dan menangani race lewat unique constraint + re-select.
+Operasi idempoten dan menangani race lewat unique constraint + re-select. Kalau
+retry konflik habis, response-nya `409`, bukan `500`. Sebelum transaksi dan
+sesudah commit, `/sync` meng-invalidate cache caller (lihat bagian Cache
+identity).
 
 Response `200`:
 
@@ -139,11 +142,19 @@ Request:
 
 - `password` opsional. Kalau diisi minimal 12 karakter. Kalau kosong, akun
   Firebase dibuat tanpa password (user masuk lewat OAuth atau reset password).
-- Urutan create: baris database (UID dibuat sendiri) → akun Firebase dengan UID
-  yang sama → commit. Kalau email sudah ada, Firebase tidak disentuh.
-- Kalau Firebase gagal, transaksi database di-rollback. Kalau commit gagal,
-  akun Firebase dihapus; kalau cleanup gagal, akun itu tidak punya baris DB
-  privileged dan `/sync` hanya akan membuat user `USER`.
+- Urutan create (opsi C):
+  1. Authorize + validasi input.
+  2. Pre-check email lewat `GetUserByEmail` di luar transaksi. Kalau email sudah
+     ada → `409`, Firebase belum disentuh. Pre-check ini best-effort; unique
+     constraint email di database tetap penentu saat terjadi race.
+  3. Buat akun Firebase dengan UID yang di-generate Firebase.
+  4. Dalam satu transaksi database: insert baris dengan `id = UUIDv7` dan
+     `auth_id = UID Firebase`, grant role `USER`, lalu commit.
+- Kalau operasi database gagal (termasuk commit), transaksi di-rollback dan
+  akun Firebase dihapus. Sebelum menghapus, service mengecek `GetUserByAuthID`:
+  kalau sudah ada baris yang mereferensikan UID tersebut (mis. `/sync` menang
+  race), akun Firebase tidak dihapus. Error cleanup digabung ke error utama
+  dengan `errors.Join`.
 
 Response `201` memakai envelope `{"data": {...user...}}`.
 
@@ -273,10 +284,14 @@ menit.
 - Redis dianggap trusted: harus private, ACL kuat, dan tidak diekspos ke publik.
 - `Authorize` (dipakai admin dan module lain) memakai cache lebih dulu, lalu
   fallback ke database dan mengisi cache.
-- Perubahan role, status, dan delete meng-invalidate cache sebelum dan sesudah
-  mutasi.
-- `Invalidate` retry tiga kali. Kalau tetap gagal, mutasi security mengembalikan
-  error (fail-closed), supaya perubahan tidak diam-diam tertinggal di cache.
+- Perubahan role, status, dan delete oleh admin meng-invalidate cache sebelum
+  dan sesudah mutasi.
+- `Invalidate` retry tiga kali. Kalau tetap gagal, mutasi admin role/status/
+  delete mengembalikan error (fail-closed), supaya perubahan tidak diam-diam
+  tertinggal di cache.
+- `/sync` meng-invalidate cache caller sebelum transaksi dan sesudah commit,
+  tanpa syarat. Error invalidasi hanya di-log; `/sync` adalah provisioning,
+  bukan mutasi security, jadi tidak fail-closed.
 - `/sync` tidak menulis cache; ini menghindari sync yang selesai belakangan
   menimpa cache baru setelah admin mengubah role/status.
 - Perubahan langsung di database di luar aplikasi bisa terlihat stale maksimal
@@ -346,9 +361,10 @@ Pesan user-facing memakai bahasa Inggris dan dipetakan oleh
   memakai `RequireAuthRevoked` sehingga token yang di-revoke/disable ditolak.
 - Endpoint user memakai `RequireAuth` lokal. `/me` mengecek status user lewat
   `Authorize` (cache/DB), jadi user disabled langsung ditolak.
-- Config production memvalidasi `APP_ENV`, kredensial database default, password
-  Redis default, dan wildcard CORS. `sslmode=disable` tetap diizinkan untuk
-  jaringan private Docker Compose.
+- Config menolak `APP_ENV` kosong/tidak valid. Cek ketat kredensial database
+  default, password Redis default, dan wildcard CORS hanya berlaku di staging
+  dan production; `APP_ENV=test` diperlakukan seperti development.
+  `sslmode=disable` tetap diizinkan untuk jaringan private Docker Compose.
 - CORS hanya aktif kalau `APP_CORS_ORIGINS` diisi, dan memakai allowlist
   (bukan wildcard).
 

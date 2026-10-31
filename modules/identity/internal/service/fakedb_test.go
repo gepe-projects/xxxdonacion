@@ -15,10 +15,15 @@ type fakeDB struct {
 	queryRowFn func(context.Context, string, ...any) pgx.Row
 	queryFn    func(context.Context, string, ...any) (pgx.Rows, error)
 	execFn     func(context.Context, string, ...any) (pgconn.CommandTag, error)
+	beginErr   error
+	commitErr  error
 	tx         *fakeTx
 }
 
 func (f *fakeDB) Begin(context.Context) (pgx.Tx, error) {
+	if f.beginErr != nil {
+		return nil, f.beginErr
+	}
 	f.tx = &fakeTx{db: f}
 	return f.tx, nil
 }
@@ -64,6 +69,9 @@ func (t *fakeTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row 
 }
 
 func (t *fakeTx) Commit(context.Context) error {
+	if t.db.commitErr != nil {
+		return t.db.commitErr
+	}
 	t.committed = true
 	return nil
 }

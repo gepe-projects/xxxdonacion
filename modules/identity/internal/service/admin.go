@@ -3,7 +3,10 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"uuid"
+
+	"github.com/jackc/pgx/v5"
 
 	"xxxdonacion/modules/identity/api/domain"
 	"xxxdonacion/modules/identity/internal/repository"
@@ -24,17 +27,31 @@ func (s *Service) CreateUser(
 		return nil, err
 	}
 
-	// create firebase dulu, karna biar authid tetep dari google, jadi create dulu di firebase
+	// Cek email di luar transaksi supaya email yang sudah terdaftar ditolak
+	// sebelum Firebase membuat akun yang nanti harus dibersihkan.
+	if _, err := s.repo.GetUserByEmail(ctx, in.Email); err == nil {
+		return nil, apperr.Conflict("email already exists")
+	} else if !postgres.IsNoRows(err) {
+		return nil, apperr.Internal(err, "get user by email")
+	}
+
+	// Akun Firebase dibuat lebih dulu agar auth_id berasal dari Firebase,
+	// bukan dibuat sendiri oleh aplikasi.
 	firebaseUID, err := s.createFirebaseUser(ctx, in)
 	if err != nil {
 		return nil, err
 	}
 
-	// kalo ga ada error insert ke db
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return nil, apperr.Internal(err, "begin create user transaction")
+		return nil, s.joinFirebaseCleanup(
+			ctx,
+			firebaseUID,
+			apperr.Internal(err, "begin create user transaction"),
+		)
 	}
+	// Rollback setelah commit sukses atau transaksi yang sudah tertutup
+	// hanyalah no-op.
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	q := s.repo.WithTx(tx)
@@ -46,29 +63,77 @@ func (s *Service) CreateUser(
 		Status: string(domain.StatusActive),
 	})
 	if err != nil {
-		if postgres.IsNoRows(err) || postgres.IsUniqueViolation(err) {
-			return nil, apperr.Conflict("email or firebase account already exists")
+		switch {
+		case postgres.IsNoRows(err) || postgres.IsUniqueViolation(err):
+			return nil, s.abortCreateUser(
+				ctx,
+				tx,
+				firebaseUID,
+				apperr.Conflict("email or firebase account already exists"),
+			)
+		default:
+			return nil, s.abortCreateUser(ctx, tx, firebaseUID, apperr.Internal(err, "create user"))
 		}
-		return nil, apperr.Internal(err, "create user")
 	}
 
 	if err := q.GrantRole(ctx, repository.GrantRoleParams{
 		UserID: user.ID,
 		Role:   string(domain.RoleUser),
 	}); err != nil {
-		return nil, apperr.Internal(err, "grant user role")
+		return nil, s.abortCreateUser(ctx, tx, firebaseUID, apperr.Internal(err, "grant user role"))
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		// Akun Firebase tidak boleh hidup tanpa baris database. Kalau baris
-		// di-rollback, sync berikutnya hanya akan membuat user USER, bukan admin.
-		if cleanupErr := s.deleteFirebaseUser(ctx, firebaseUID); cleanupErr != nil {
-			return nil, errors.Join(apperr.Internal(err, "commit create user transaction"), cleanupErr)
-		}
-		return nil, apperr.Internal(err, "commit create user transaction")
+		// Commit yang gagal sudah menutup transaksi; rollback yang di-defer
+		// hanya no-op. Akun Firebase tidak boleh hidup tanpa baris database.
+		return nil, s.joinFirebaseCleanup(
+			ctx,
+			firebaseUID,
+			apperr.Internal(err, "commit create user transaction"),
+		)
 	}
 
 	return toUser(user, []domain.Role{domain.RoleUser}), nil
+}
+
+// abortCreateUser me-rollback transaksi secara eksplisit sebelum cleanup.
+// Rollback harus selesai lebih dulu supaya baris yang seharusnya dibatalkan
+// tidak dianggap milik alur lain oleh guard cleanupFirebaseUser.
+func (s *Service) abortCreateUser(
+	ctx context.Context,
+	tx pgx.Tx,
+	firebaseUID string,
+	primary error,
+) error {
+	if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+		primary = errors.Join(primary, fmt.Errorf("rollback create user transaction: %w", err))
+	}
+	return s.joinFirebaseCleanup(ctx, firebaseUID, primary)
+}
+
+// joinFirebaseCleanup menjalankan cleanup Firebase dan menggabungkan
+// kegagalannya dengan error utama.
+func (s *Service) joinFirebaseCleanup(ctx context.Context, uid string, primary error) error {
+	if err := s.cleanupFirebaseUser(ctx, uid); err != nil {
+		return errors.Join(primary, err)
+	}
+	return primary
+}
+
+// cleanupFirebaseUser menghapus akun Firebase hanya kalau auth_id tersebut
+// belum dipakai baris database. Baris yang sudah ada bisa berasal dari alur
+// lain seperti /sync yang sudah me-link akun itu, sehingga akun Firebase harus
+// dibiarkan hidup.
+func (s *Service) cleanupFirebaseUser(ctx context.Context, uid string) error {
+	_, err := s.repo.GetUserByAuthID(ctx, postgres.ToPgText(uid))
+	switch {
+	case err == nil:
+		return nil
+	case postgres.IsNoRows(err):
+		return s.deleteFirebaseUser(ctx, uid)
+	default:
+		return apperr.Internal(err, "check firebase user linkage")
+	}
 }
 
 func (s *Service) SetUserStatus(

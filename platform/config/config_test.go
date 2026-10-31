@@ -21,6 +21,18 @@ func TestValidateDevelopmentAllowsLocalDefaults(t *testing.T) {
 	}
 }
 
+func TestValidateTestEnvironmentAllowsLocalDefaults(t *testing.T) {
+	if err := validApp("test").validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateStagingRejectsDefaultCredentials(t *testing.T) {
+	if err := validApp("staging").validate(); err == nil {
+		t.Fatal("expected staging validation error")
+	}
+}
+
 func TestValidateRequiresEnvironment(t *testing.T) {
 	app := validApp("")
 	if err := app.validate(); err == nil {

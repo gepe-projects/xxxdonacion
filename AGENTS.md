@@ -109,13 +109,16 @@ Aturan:
 - Cache ada di `internal/cache` dengan pola `Get`/`Set`/`Invalidate`.
 - Baca cache Redis lebih dulu; database hanya di-hit saat cache miss.
 - Redis dianggap trusted: wajib private, ACL kuat, dan tidak diekspos publik.
-- `Invalidate` mengembalikan error dan retry. Mutasi role/status/delete wajib
-  fail-closed kalau invalidasi gagal; jangan menelan error cache untuk aksi
-  security.
+- `Invalidate` mengembalikan error dan retry. Mutasi admin role/status/delete
+  wajib fail-closed kalau invalidasi gagal; jangan menelan error cache untuk
+  aksi security. Fail-closed **hanya** berlaku untuk mutasi admin tersebut.
 - `Set` boleh log-only karena DB tetap sumber kebenaran, tetapi cache stale
   maksimal TTL.
-- Setiap mutasi user/role/status/delete wajib meng-invalidate cache sebelum dan
+- Setiap mutasi user/role/status/delete meng-invalidate cache sebelum dan
   sesudah perubahan.
+- `/sync` meng-invalidate cache caller sebelum transaksi dan sesudah commit,
+  tanpa syarat. `/sync` adalah provisioning, bukan mutasi security, jadi error
+  invalidasi cukup di-log (best-effort); jangan fail-closed.
 - Cache diisi oleh `Authorize` saat cache miss. Jangan menulis cache dari
   transaksi sync yang bisa selesai belakangan dan menimpa cache baru.
 
@@ -135,9 +138,16 @@ Aturan:
   SUPER_ADMIN pertama dibuat manual dari database.
 - Create user admin **tidak menerima role dari input** dan selalu memberi
   `USER`. Perubahan role hanya lewat endpoint roles.
-- Create user memakai urutan DB-first: insert baris dengan UID sendiri, lalu
-  buat Firebase user dengan UID yang sama, baru commit. Email yang sudah ada
-  harus ditolak sebelum Firebase disentuh.
+- Create user admin memakai alur C: authorize + validasi, lalu pre-check email
+  lewat `GetUserByEmail` **di luar transaksi**. Email yang sudah ada ditolak
+  `409` sebelum Firebase disentuh. Buat Firebase user dengan UID dari Firebase,
+  lalu dalam satu transaksi database insert baris `id = UUIDv7` dan
+  `auth_id = UID Firebase`, grant `USER`, commit.
+- Kalau operasi database gagal, rollback dan hapus akun Firebase. Sebelum
+  menghapus, cek `GetUserByAuthID`: kalau sudah ada baris yang mereferensikan
+  UID itu (mis. `/sync` menang race), jangan hapus. Kegagalan cleanup digabung
+  ke error utama dengan `errors.Join`. Pre-check email bersifat best-effort;
+  unique constraint email di database tetap penentu.
 - `ADMIN` mengelola `USER`; `SUPER_ADMIN` mengelola `USER` dan `ADMIN`. User
   tidak boleh mengubah status/role sendiri, dan `SUPER_ADMIN` tidak bisa diubah
   lewat API.
@@ -355,8 +365,10 @@ contoh konflik yang harus di-override:
   hanya demi mengikuti skill.
 - Jangan menambah dependency, logger, atau middleware baru hanya karena skill
   menyebutkannya.
-- Jangan membuat interface `UserAdmin`/abstraksi Firebase Admin di platform;
-  cukup concrete `*auth.Client` di service module.
+- Jangan membuat abstraksi Firebase Admin di platform; `*auth.Client` tetap
+  concrete. Interface kecil `firebaseAdmin` di
+  `modules/identity/internal/service` diperbolehkan sebagai test seam, dan
+  `*auth.Client` memenuhinya tanpa adapter.
 - Jangan membuat helper error lokal di module; pakai constructor `apperr`.
 - Jangan mengganti envelope response sukses `{"data": ...}` dengan bentuk lain
   tanpa diskusi.
@@ -385,12 +397,13 @@ contoh konflik yang harus di-override:
 - [ ] Repository dan cache dibuat sekali di constructor service; transaksi pakai `repo.WithTx`.
 - [ ] Error/pgtype Postgres memakai helper `platform/postgres`.
 - [ ] Authz module lain memakai `domain.Service.Authorize` (Redis-first), bukan query tabel identity.
-- [ ] Mutasi user/role/status/delete meng-invalidate cache; kegagalan invalidasi fail-closed.
-- [ ] Create user admin memakai DB-first, UID Firebase yang sama, dan selalu `USER`.
+- [ ] Mutasi admin role/status/delete meng-invalidate cache sebelum dan sesudah perubahan; kegagalan invalidasi fail-closed.
+- [ ] `/sync` meng-invalidate cache caller sebelum transaksi dan sesudah commit; error invalidasi log-only.
+- [ ] Create user admin memakai alur C (pre-check email best-effort, UID dari Firebase, insert `UUIDv7` + `auth_id` dalam transaksi, cleanup Firebase dengan guard `GetUserByAuthID`) dan selalu `USER`.
 - [ ] Endpoint admin memakai `RequireAuthRevoked` dan rate limit Redis.
 - [ ] Cursor pagination baru memakai `platform/pagination`.
 - [ ] Operasi Firebase Admin ada di service module, bukan `platform/firebase`.
-- [ ] Config production menolak kredensial default dan `APP_ENV` kosong.
+- [ ] Config menolak `APP_ENV` kosong/tidak valid; cek kredensial default hanya berlaku di staging/production (`APP_ENV=test` diperlakukan seperti development).
 - [ ] Handler tetap tipis; business logic ada di service.
 - [ ] Perubahan tidak melebar ke kode yang tidak terkait.
 - [ ] Dokumentasi diperbarui kalau perilaku berubah.

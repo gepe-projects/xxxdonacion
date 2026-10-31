@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
@@ -100,5 +101,91 @@ func TestMeRejectsDisabledUser(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+}
+
+func newAdminHandler(t *testing.T) *echo.Echo {
+	t.Helper()
+
+	e := echo.New()
+	e.HTTPErrorHandler = middleware.ErrorHandler()
+	h := New(service.New(nil, nil, nil))
+	auth := middleware.RequireAuth(staticVerifier{identity: &firebase.Identity{
+		UID:           "uid-admin",
+		Email:         "admin@example.com",
+		Name:          "Admin",
+		EmailVerified: true,
+	}})
+	e.PATCH("/admin/users/:id/status", h.SetUserStatus, auth)
+	e.PUT("/admin/users/:id/roles", h.SetUserRoles, auth)
+	e.DELETE("/admin/users/:id", h.DeleteUser, auth)
+	e.GET("/admin/users", h.ListUsers, auth)
+	return e
+}
+
+func TestAdminRoutesRejectInvalidUUID(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		target string
+		body   string
+	}{
+		{
+			name:   "set status",
+			method: http.MethodPatch,
+			target: "/admin/users/not-a-uuid/status",
+			body:   `{"status":"ACTIVE"}`,
+		},
+		{
+			name:   "set roles",
+			method: http.MethodPut,
+			target: "/admin/users/not-a-uuid/roles",
+			body:   `{"roles":["USER"]}`,
+		},
+		{
+			name:   "delete user",
+			method: http.MethodDelete,
+			target: "/admin/users/not-a-uuid",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.target, strings.NewReader(tt.body))
+			req.Header.Set(echo.HeaderAuthorization, "Bearer token")
+			if tt.body != "" {
+				req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+			}
+			rec := httptest.NewRecorder()
+			newAdminHandler(t).ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestListUsersRejectsInvalidPagination(t *testing.T) {
+	tests := []struct {
+		name   string
+		target string
+	}{
+		{name: "zero limit", target: "/admin/users?limit=0"},
+		{name: "non numeric limit", target: "/admin/users?limit=abc"},
+		{name: "invalid cursor", target: "/admin/users?cursor=not-a-cursor"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.target, nil)
+			req.Header.Set(echo.HeaderAuthorization, "Bearer token")
+			rec := httptest.NewRecorder()
+			newAdminHandler(t).ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }

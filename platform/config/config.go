@@ -82,7 +82,7 @@ func (app *App) validate() error {
 		return fmt.Errorf("APP_LOG_FORMAT must be text|json, got %q", app.LogFormat)
 	}
 
-	if env != "development" {
+	if env == "staging" || env == "production" {
 		return app.validateProduction()
 	}
 	return nil

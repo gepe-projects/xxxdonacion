@@ -2,13 +2,13 @@ package service
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"uuid"
 
 	"xxxdonacion/modules/identity/api/domain"
 	"xxxdonacion/modules/identity/internal/repository"
 	"xxxdonacion/platform/apperr"
+	"xxxdonacion/platform/logger"
 	"xxxdonacion/platform/postgres"
 )
 
@@ -18,6 +18,10 @@ func (s *Service) Sync(ctx context.Context, caller domain.Principal) (*domain.Us
 	if err := caller.Validate(); err != nil {
 		return nil, err
 	}
+
+	// Cache dibersihkan sebelum dan sesudah transaksi, termasuk saat sync tidak
+	// mengubah profil/role, supaya data lama tidak bertahan sampai TTL.
+	s.invalidateCacheBestEffort(ctx, caller.UID)
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -60,7 +64,17 @@ func (s *Service) Sync(ctx context.Context, caller domain.Principal) (*domain.Us
 		return nil, apperr.Internal(err, "commit sync transaction")
 	}
 
+	s.invalidateCacheBestEffort(ctx, caller.UID)
+
 	return toUser(user, roles), nil
+}
+
+// invalidateCacheBestEffort tidak menggagalkan /sync saat Redis bermasalah:
+// database tetap sumber kebenaran dan cache stale paling lama TTL.
+func (s *Service) invalidateCacheBestEffort(ctx context.Context, uid string) {
+	if err := s.cache.Invalidate(ctx, uid); err != nil {
+		logger.FromContext(ctx).Warn("identity cache invalidate failed", "error", err)
+	}
 }
 
 func (s *Service) findOrCreateUser(
@@ -175,7 +189,7 @@ func (s *Service) resolveSyncConflict(
 		}
 	}
 
-	return repository.IdentityUser{}, apperr.Internal(errors.New("too many conflicts"), "resolve concurrent sync")
+	return repository.IdentityUser{}, apperr.Conflict("too many conflicts; please retry")
 }
 
 func (s *Service) applyProfile(

@@ -49,7 +49,9 @@ func (c *UserCache) Set(ctx context.Context, uid string, u domain.User) {
 }
 
 // Invalidate dipanggil setiap mutasi user/role, supaya perubahan langsung terasa.
-// Error dikembalikan agar mutasi security bisa fail-closed saat Redis bermasalah.
+// Error dikembalikan, bukan di-log di sini: caller memutuskan log atau return
+// supaya tiap error dicatat sekali (AccessLog mencatat error yang dikembalikan).
+// Mutasi security bisa fail-closed saat Redis bermasalah.
 func (c *UserCache) Invalidate(ctx context.Context, uid string) error {
 	var err error
 	for range invalidateRetries {
@@ -57,6 +59,5 @@ func (c *UserCache) Invalidate(ctx context.Context, uid string) error {
 			return nil
 		}
 	}
-	logger.FromContext(ctx).Warn("identity cache del failed", "error", err)
 	return fmt.Errorf("invalidate identity cache: %w", err)
 }
